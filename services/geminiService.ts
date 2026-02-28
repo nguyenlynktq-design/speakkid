@@ -34,9 +34,22 @@ function getFallbackModels(): string[] {
 // RETRY WITH MODEL FALLBACK
 // =============================================
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label = 'API call'): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`⏱️ ${label} quá thời gian (${Math.round(ms / 1000)}s). Bé hãy thử lại nhé!`));
+    }, ms);
+
+    promise
+      .then(val => { clearTimeout(timer); resolve(val); })
+      .catch(err => { clearTimeout(timer); reject(err); });
+  });
+}
+
 async function callWithRetry<T>(
   fn: (model: string) => Promise<T>,
-  maxRetriesPerModel = 2
+  maxRetriesPerModel = 1,
+  timeoutMs = 60000
 ): Promise<T> {
   const models = getFallbackModels();
   let lastError: any;
@@ -45,11 +58,18 @@ async function callWithRetry<T>(
     let delay = 1500;
     for (let attempt = 0; attempt < maxRetriesPerModel; attempt++) {
       try {
-        return await fn(model);
+        console.log(`[SpeakPro] Trying model: ${model} (attempt ${attempt + 1}/${maxRetriesPerModel})...`);
+        return await withTimeout(fn(model), timeoutMs, `Model ${model}`);
       } catch (err: any) {
         lastError = err;
-        const errorStr = JSON.stringify(err).toLowerCase();
+        const errorStr = (err?.message || JSON.stringify(err) || '').toLowerCase();
         const isQuotaError = err?.status === 429 || errorStr.includes('quota') || errorStr.includes('resource_exhausted');
+        const isTimeoutError = errorStr.includes('quá thời gian');
+
+        if (isTimeoutError) {
+          console.warn(`[SpeakPro] Model ${model} timed out, trying next model...`);
+          break; // Skip to next model immediately on timeout
+        }
 
         if (isQuotaError && attempt < maxRetriesPerModel - 1) {
           console.warn(`[SpeakPro] Model ${model} quota hit, retrying in ${delay}ms...`);
@@ -58,7 +78,7 @@ async function callWithRetry<T>(
           continue;
         }
         // Move to next model
-        console.warn(`[SpeakPro] Model ${model} failed, trying next model...`, err?.message || err);
+        console.warn(`[SpeakPro] Model ${model} failed:`, err?.message || err);
         break;
       }
     }

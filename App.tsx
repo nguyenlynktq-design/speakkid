@@ -71,8 +71,12 @@ const App: React.FC = () => {
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
       if (playbackAudioRef.current) {
         playbackAudioRef.current.pause();
+        if (playbackAudioRef.current.src) {
+          URL.revokeObjectURL(playbackAudioRef.current.src);
+        }
         playbackAudioRef.current = null;
       }
+      setIsPlayingRecorded(false);
     };
   }, []);
 
@@ -172,6 +176,27 @@ const App: React.FC = () => {
         level
       });
       setStatus(AppStatus.READY);
+
+      // Auto-play teacher voice right after content is generated
+      try {
+        setIsAudioLoading(true);
+        if (!audioContextRef.current) audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+        const buffer = await generateTeacherVoice(fullScript);
+        audioCacheRef.current.set(fullScript, buffer);
+
+        const source = audioContextRef.current.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContextRef.current.destination);
+        source.start(0);
+        sourceNodeRef.current = source;
+        setAudioState('playing');
+        source.onended = () => { setAudioState('idle'); sourceNodeRef.current = null; };
+      } catch (e) {
+        console.warn('[SpeakPro] Auto-play teacher voice failed:', e);
+        setAudioState('idle');
+      } finally {
+        setIsAudioLoading(false);
+      }
     } catch (err: any) {
       console.error("Generate error:", err);
       setAppError(err?.message || "Lỗi không xác định. Bé hãy thử lại nhé!");
@@ -185,6 +210,14 @@ const App: React.FC = () => {
   }, []);
 
   const startRecording = async () => {
+    // Stop any playback in progress
+    if (playbackAudioRef.current) {
+      playbackAudioRef.current.pause();
+      if (playbackAudioRef.current.src) URL.revokeObjectURL(playbackAudioRef.current.src);
+      playbackAudioRef.current = null;
+    }
+    setIsPlayingRecorded(false);
+
     if (recordedUrl) {
       URL.revokeObjectURL(recordedUrl);
     }
@@ -237,7 +270,7 @@ const App: React.FC = () => {
         stream.getTracks().forEach(t => t.stop());
       };
 
-      recorder.start(1000);
+      recorder.start();
       setStatus(AppStatus.RECORDING);
       timerIntervalRef.current = window.setInterval(() => setRecordingTime(p => p + 1), 1000);
     } catch (err) {
@@ -258,6 +291,8 @@ const App: React.FC = () => {
     setStatus(AppStatus.REVIEWING);
   };
 
+  const [isPlayingRecorded, setIsPlayingRecorded] = useState(false);
+
   const playRecordedAudio = () => {
     if (!recordedBlob) {
       console.warn("No recorded blob found for playback.");
@@ -265,40 +300,64 @@ const App: React.FC = () => {
       return;
     }
 
-    // Stop any currently playing audio
+    // If currently playing, pause it
+    if (playbackAudioRef.current && isPlayingRecorded) {
+      playbackAudioRef.current.pause();
+      playbackAudioRef.current.currentTime = 0;
+      setIsPlayingRecorded(false);
+      return;
+    }
+
+    // Stop any previously playing audio element
     if (playbackAudioRef.current) {
       playbackAudioRef.current.pause();
       playbackAudioRef.current.onended = null;
       playbackAudioRef.current.onerror = null;
+      if (playbackAudioRef.current.src) {
+        URL.revokeObjectURL(playbackAudioRef.current.src);
+      }
+      playbackAudioRef.current = null;
     }
 
-    // Create a fresh blob URL each time to avoid stale URL issues
-    const freshUrl = URL.createObjectURL(recordedBlob);
+    // Also stop teacher audio if playing
+    stopTeacherAudio();
+
     console.log("Playing recorded audio, blob size:", recordedBlob.size, "type:", recordedBlob.type);
 
-    const audio = new Audio();
-    playbackAudioRef.current = audio; // Store in ref to prevent GC
+    // Create a fresh blob URL
+    const freshUrl = URL.createObjectURL(recordedBlob);
+
+    const audio = new Audio(freshUrl);
+    playbackAudioRef.current = audio;
     audio.volume = 1.0;
 
-    audio.oncanplaythrough = () => {
-      audio.play().catch(error => {
-        console.error("Playback failed:", error);
-        alert("Không thể phát âm thanh. Bé hãy kiểm tra âm lượng hoặc quyền trình duyệt nhé!");
-      });
-    };
-
     audio.onended = () => {
+      setIsPlayingRecorded(false);
       URL.revokeObjectURL(freshUrl);
+      playbackAudioRef.current = null;
     };
 
     audio.onerror = (e) => {
-      console.error("Audio element error:", e);
+      console.error("Audio playback error:", e, "Audio error code:", audio.error?.code, "message:", audio.error?.message);
+      setIsPlayingRecorded(false);
       URL.revokeObjectURL(freshUrl);
+      playbackAudioRef.current = null;
       alert("Lỗi phát âm thanh. Bé hãy thử ghi âm lại nhé!");
     };
 
-    audio.src = freshUrl;
-    audio.load(); // Explicitly trigger loading
+    // Use play() directly - modern browsers support this with blob URLs
+    audio.play()
+      .then(() => {
+        setIsPlayingRecorded(true);
+        console.log("Audio playback started successfully");
+      })
+      .catch(error => {
+        console.error("Playback promise rejected:", error);
+        URL.revokeObjectURL(freshUrl);
+        playbackAudioRef.current = null;
+        setIsPlayingRecorded(false);
+        alert("Không thể phát âm thanh. Bé hãy kiểm tra âm lượng hoặc quyền trình duyệt nhé!");
+      });
   };
 
   const handleEvaluate = async () => {
@@ -513,6 +572,16 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center justify-center min-h-[60vh] gap-10">
             <div className="w-36 md:w-48 h-36 md:h-48 bg-orange-100 rounded-[4rem] flex items-center justify-center text-7xl md:text-8xl shadow-2xl animate-bounce">🖌️</div>
             <h3 className="text-2xl md:text-4xl font-black text-slate-800 uppercase italic animate-pulse text-center">AI đang soạn bài cho bé...</h3>
+            <p className="text-sm text-slate-400 font-bold">Thường mất 10-30 giây</p>
+            <button
+              onClick={() => {
+                setStatus(AppStatus.IDLE);
+                setAppError(null);
+              }}
+              className="px-8 py-3 bg-slate-200 text-slate-600 rounded-full font-black text-sm uppercase hover:bg-slate-300 transition-all flex items-center gap-2"
+            >
+              <X size={16} /> Huỷ
+            </button>
           </div>
         )}
 
@@ -593,7 +662,7 @@ const App: React.FC = () => {
               )}
               {status === AppStatus.REVIEWING && (
                 <div className="bg-white p-3 md:p-4 rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border-4 border-blue-100 grid grid-cols-4 gap-2 animate-in slide-in-from-bottom-6">
-                  <button onClick={playRecordedAudio} className="py-3 md:py-4 bg-slate-100 rounded-xl md:rounded-2xl flex flex-col items-center justify-center gap-1 font-black text-[8px] md:text-[9px] uppercase hover:bg-slate-200"><Play size={16} /> Nghe</button>
+                  <button onClick={playRecordedAudio} className={`py-3 md:py-4 rounded-xl md:rounded-2xl flex flex-col items-center justify-center gap-1 font-black text-[8px] md:text-[9px] uppercase ${isPlayingRecorded ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 hover:bg-slate-200'}`}>{isPlayingRecorded ? <Pause size={16} /> : <Play size={16} />} {isPlayingRecorded ? 'Dừng' : 'Nghe'}</button>
                   <button onClick={downloadAudio} className="py-3 md:py-4 bg-slate-100 rounded-xl md:rounded-2xl flex flex-col items-center justify-center gap-1 font-black text-[8px] md:text-[9px] uppercase hover:bg-slate-200 text-blue-600"><Download size={16} /> Tải về</button>
                   <button onClick={startRecording} className="py-3 md:py-4 bg-pink-50 text-pink-600 rounded-xl md:rounded-2xl flex flex-col items-center justify-center gap-1 font-black text-[8px] md:text-[9px] uppercase hover:bg-pink-100"><RotateCcw size={16} /> Thử lại</button>
                   <button onClick={handleEvaluate} className="py-3 md:py-4 bg-orange-500 text-white rounded-xl md:rounded-2xl flex flex-col items-center justify-center gap-1 font-black text-[8px] md:text-[9px] uppercase shadow-xl hover:scale-105"><CheckCircle2 size={16} /> Chấm</button>
@@ -607,6 +676,16 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center justify-center min-h-[50vh] gap-8">
             <div className="w-20 h-20 border-[8px] border-orange-500 border-t-transparent rounded-full animate-spin"></div>
             <h3 className="text-xl md:text-2xl font-black text-slate-800 uppercase italic animate-pulse text-center">Ms Ly AI đang nghe lại bài nói của bé... <br /> Chờ tí nhé!</h3>
+            <p className="text-sm text-slate-400 font-bold">Quá trình này có thể mất 30-60 giây</p>
+            <button
+              onClick={() => {
+                setStatus(AppStatus.REVIEWING);
+                setAppError(null);
+              }}
+              className="px-8 py-3 bg-slate-200 text-slate-600 rounded-full font-black text-sm uppercase hover:bg-slate-300 transition-all flex items-center gap-2"
+            >
+              <X size={16} /> Huỷ chấm bài
+            </button>
           </div>
         )}
 
