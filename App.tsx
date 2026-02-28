@@ -42,6 +42,7 @@ const App: React.FC = () => {
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [audioLevel, setAudioLevel] = useState(0);
 
   // Settings & Error state
   const [showSettings, setShowSettings] = useState(false);
@@ -55,6 +56,12 @@ const App: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Recording-specific refs
+  const recAudioCtxRef = useRef<AudioContext | null>(null);
+  const recStreamRef = useRef<MediaStream | null>(null);
+  const recAnimFrameRef = useRef<number | null>(null);
+  const recAnalyserRef = useRef<AnalyserNode | null>(null);
 
   const audioCacheRef = useRef<Map<string, AudioBuffer>>(new Map());
 
@@ -209,6 +216,23 @@ const App: React.FC = () => {
     setStatus(AppStatus.IDLE);
   }, []);
 
+  const cleanupRecordingAudio = () => {
+    if (recAnimFrameRef.current) {
+      cancelAnimationFrame(recAnimFrameRef.current);
+      recAnimFrameRef.current = null;
+    }
+    if (recStreamRef.current) {
+      recStreamRef.current.getTracks().forEach(t => t.stop());
+      recStreamRef.current = null;
+    }
+    if (recAudioCtxRef.current && recAudioCtxRef.current.state !== 'closed') {
+      recAudioCtxRef.current.close().catch(() => { });
+      recAudioCtxRef.current = null;
+    }
+    recAnalyserRef.current = null;
+    setAudioLevel(0);
+  };
+
   const startRecording = async () => {
     // Stop any playback in progress
     if (playbackAudioRef.current) {
@@ -217,6 +241,8 @@ const App: React.FC = () => {
       playbackAudioRef.current = null;
     }
     setIsPlayingRecorded(false);
+    stopTeacherAudio();
+    cleanupRecordingAudio();
 
     if (recordedUrl) {
       URL.revokeObjectURL(recordedUrl);
@@ -227,14 +253,49 @@ const App: React.FC = () => {
     audioChunksRef.current = [];
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
+      // Step 1: Get mic stream with simple constraints
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recStreamRef.current = stream;
 
+      // Verify track is live
+      const audioTrack = stream.getAudioTracks()[0];
+      if (!audioTrack || audioTrack.readyState !== 'live') {
+        throw new Error('Microphone track is not active. readyState: ' + audioTrack?.readyState);
+      }
+      console.log('[SpeakPro] Mic track:', audioTrack.label, 'state:', audioTrack.readyState, 'enabled:', audioTrack.enabled);
+
+      // Step 2: Route through Web Audio API for reliable capture
+      const audioCtx = new AudioContext();
+      recAudioCtxRef.current = audioCtx;
+
+      const sourceNode = audioCtx.createMediaStreamSource(stream);
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1.5; // Slight boost to ensure audibility
+
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      recAnalyserRef.current = analyser;
+
+      const destination = audioCtx.createMediaStreamDestination();
+
+      // Connect: Mic → Gain → Analyser → Destination
+      sourceNode.connect(gainNode);
+      gainNode.connect(analyser);
+      analyser.connect(destination);
+
+      // Step 3: Start audio level monitoring
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const updateLevel = () => {
+        if (!recAnalyserRef.current) return;
+        recAnalyserRef.current.getByteFrequencyData(dataArray);
+        const avg = dataArray.reduce((sum, v) => sum + v, 0) / dataArray.length;
+        setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
+        recAnimFrameRef.current = requestAnimationFrame(updateLevel);
+      };
+      recAnimFrameRef.current = requestAnimationFrame(updateLevel);
+
+      // Step 4: Create MediaRecorder on the PROCESSED stream (from destination)
+      const processedStream = destination.stream;
       const supportedTypes = [
         'audio/webm;codecs=opus',
         'audio/webm',
@@ -243,9 +304,13 @@ const App: React.FC = () => {
         'audio/aac'
       ];
       const mimeType = supportedTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+      console.log('[SpeakPro] Selected MIME type:', mimeType || 'default');
 
-      const options = mimeType ? { mimeType } : {};
-      const recorder = new MediaRecorder(stream, options);
+      const recorderOptions: MediaRecorderOptions = {
+        ...(mimeType ? { mimeType } : {}),
+        audioBitsPerSecond: 128000
+      };
+      const recorder = new MediaRecorder(processedStream, recorderOptions);
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (e) => {
@@ -257,37 +322,45 @@ const App: React.FC = () => {
       recorder.onstop = () => {
         const finalMimeType = recorder.mimeType || mimeType || 'audio/webm';
         const blob = new Blob(audioChunksRef.current, { type: finalMimeType });
-
-        console.log("Recording stopped. Blob size:", blob.size, "bytes, Type:", blob.type);
+        console.log('[SpeakPro] Recording stopped. Chunks:', audioChunksRef.current.length, 'Blob size:', blob.size, 'bytes, Type:', blob.type);
 
         if (blob.size === 0) {
-          console.warn("Warning: Recorded blob is empty! Check microphone permissions.");
+          console.warn('[SpeakPro] WARNING: Recorded blob is empty!');
+          alert('Ghi âm bị lỗi (file trống). Hãy kiểm tra micro và thử lại.');
         }
 
         setRecordedBlob(blob);
         setRecordedUrl(URL.createObjectURL(blob));
-
-        stream.getTracks().forEach(t => t.stop());
+        cleanupRecordingAudio();
       };
 
-      recorder.start();
+      // Start with timeslice for periodic data capture
+      recorder.start(250);
       setStatus(AppStatus.RECORDING);
       timerIntervalRef.current = window.setInterval(() => setRecordingTime(p => p + 1), 1000);
-    } catch (err) {
-      console.error("Recording error:", err);
-      alert("Không thể truy cập Micro. Bé hãy kiểm tra quyền truy cập micro của trình duyệt nhé!");
+
+      console.log('[SpeakPro] Recording started. Recorder state:', recorder.state);
+    } catch (err: any) {
+      console.error('[SpeakPro] Recording error:', err);
+      cleanupRecordingAudio();
+      alert(err?.message?.includes('Microphone track')
+        ? 'Micro không hoạt động. Hãy kiểm tra micro hoặc thử trình duyệt khác.'
+        : 'Không thể truy cập Micro. Bé hãy kiểm tra quyền truy cập micro của trình duyệt nhé!');
       setStatus(AppStatus.READY);
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      // Request any pending data before stopping
+      try { mediaRecorderRef.current.requestData(); } catch (_) { }
       mediaRecorderRef.current.stop();
     }
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
     }
+    // Note: cleanupRecordingAudio is called in recorder.onstop
     setStatus(AppStatus.REVIEWING);
   };
 
@@ -652,12 +725,27 @@ const App: React.FC = () => {
                 </button>
               )}
               {status === AppStatus.RECORDING && (
-                <div className="bg-white/95 backdrop-blur-md px-6 md:px-10 py-5 md:py-6 rounded-full shadow-2xl border-4 border-red-100 flex items-center justify-between animate-in zoom-in">
-                  <div className="flex items-center gap-3 md:gap-4">
-                    <div className="w-6 md:w-8 h-6 md:h-8 bg-red-600 rounded-full animate-ping"></div>
-                    <p className="text-lg md:text-xl font-black text-red-600 uppercase italic tracking-tighter">Ghi âm... {formatTime(recordingTime)}</p>
+                <div className="bg-white/95 backdrop-blur-md px-6 md:px-10 py-4 md:py-5 rounded-[2rem] shadow-2xl border-4 border-red-100 flex flex-col gap-3 animate-in zoom-in">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3 md:gap-4">
+                      <div className="w-5 md:w-6 h-5 md:h-6 bg-red-600 rounded-full animate-ping"></div>
+                      <p className="text-base md:text-lg font-black text-red-600 uppercase italic tracking-tighter">Ghi âm... {formatTime(recordingTime)}</p>
+                    </div>
+                    <button onClick={stopRecording} className="bg-red-600 text-white px-6 md:px-8 py-2.5 md:py-3 rounded-full font-black text-base md:text-lg hover:bg-red-700 active:scale-95 shadow-lg border-2 border-red-400">Xong ✅</button>
                   </div>
-                  <button onClick={stopRecording} className="bg-red-600 text-white px-6 md:px-8 py-2.5 md:py-3 rounded-full font-black text-base md:text-lg hover:bg-red-700 active:scale-95 shadow-lg border-2 border-red-400">Xong ✅</button>
+                  {/* Audio Level Meter */}
+                  <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-100"
+                      style={{
+                        width: `${audioLevel}%`,
+                        backgroundColor: audioLevel > 60 ? '#22c55e' : audioLevel > 20 ? '#f59e0b' : '#ef4444'
+                      }}
+                    />
+                  </div>
+                  <p className="text-[10px] font-bold text-center" style={{ color: audioLevel > 20 ? '#22c55e' : '#ef4444' }}>
+                    {audioLevel > 20 ? '🎤 Mic đang hoạt động' : '⚠️ Không nhận được giọng nói - kiểm tra micro!'}
+                  </p>
                 </div>
               )}
               {status === AppStatus.REVIEWING && (

@@ -270,28 +270,53 @@ export const evaluatePresentation = async (originalScript: string, audioBase64: 
         parts: [
           { inlineData: { mimeType: audioMimeType, data: audioBase64 } },
           {
-            text: `Bạn là giám khảo Cambridge chuyên chấm Speaking. Hãy nghe và chấm điểm bài nói của bé.
-                   Kịch bản mục tiêu: "${originalScript}".
-                   
-                   YÊU CẦU CHẤM ĐIỂM NGHIÊM TÚC VÀ CÔNG BẰNG:
-                   1. ĐỌC HẾT (TASK FULFILLMENT): Kiểm tra xem bé có bỏ sót câu nào không. Nếu bỏ sót nhiều câu, điểm Task Fulfillment phải thấp.
-                   2. ĐỌC ĐÚNG: So sánh từng từ bé nói với kịch bản. Phát hiện từ đọc sai, đọc ngọng hoặc đọc thiếu âm cuối.
-                   3. NHẬN XÉT LỖI (TIẾNG VIỆT): Liệt kê danh sách các lỗi cụ thể bé mắc phải. Ví dụ: "Từ 'elephant' bé quên phát âm âm 't' ở cuối".
-                   
-                   Trả về JSON:
-                   {
-                     "transcript": "Văn bản bé thực tế đã nói",
-                     "pronunciation": 0.0,
-                     "fluency": 0.0,
-                     "intonation": 0.0,
-                     "vocabulary": 0.0,
-                     "grammar": 0.0,
-                     "taskFulfillment": 0.0,
-                     "feedback": "Nhận xét tổng quát bằng tiếng Việt",
-                     "teacherPraise": "Lời khen khích lệ bé",
-                     "mistakes": [{"word": "Từ bị sai", "type": "mispronunciation", "feedback": "Nhận xét tiếng Việt cụ thể về lỗi này"}],
-                     "suggestions": ["3 Gợi ý để bé cải thiện"]
-                   }` }
+            text: `You are a certified Cambridge Speaking examiner. You MUST carefully LISTEN to the audio recording attached above and evaluate the child's speaking performance.
+
+TARGET SCRIPT (what the child should have said):
+"${originalScript}"
+
+IMPORTANT INSTRUCTIONS:
+1. LISTEN CAREFULLY to the audio. Transcribe EXACTLY what the child actually said.
+2. COMPARE the child's speech with the target script word by word.
+3. Score EACH criterion on a scale from 0 to 10 (INTEGER only, no decimals).
+
+SCORING RUBRIC (0-10 scale):
+- 9-10: Excellent, near-perfect performance
+- 7-8: Good, minor issues only  
+- 5-6: Average, noticeable errors
+- 3-4: Below average, significant problems
+- 1-2: Poor, major difficulties
+- 0: No speech detected or completely unintelligible
+
+CRITERIA TO EVALUATE:
+- pronunciation: How accurately the child pronounces each word (0-10)
+- fluency: How smoothly and naturally the child speaks without long pauses (0-10)
+- intonation: How well the child uses stress and intonation patterns (0-10)
+- vocabulary: How well the child uses the target vocabulary from the script (0-10)
+- grammar: How correctly the child uses grammar structures (0-10)
+- taskFulfillment: How completely the child covers the script content - did they say all parts? (0-10)
+
+IMPORTANT SCORING RULES:
+- If the child reads the script clearly and completely, scores should be 7-10 for each criterion.
+- If the child reads perfectly (like a native speaker or AI voice), scores should be 9-10.
+- The "transcript" field MUST contain what you actually heard in the audio.
+- ALL scores must be integers between 0 and 10.
+- Write all feedback and suggestions in Vietnamese.
+
+Return JSON with these EXACT fields:
+{
+  "transcript": "What the child actually said (transcribed from audio)",
+  "pronunciation": 8,
+  "fluency": 7,
+  "intonation": 7,
+  "vocabulary": 8,
+  "grammar": 8,
+  "taskFulfillment": 9,
+  "feedback": "Detailed feedback in Vietnamese about the child's performance",
+  "teacherPraise": "Encouraging praise in Vietnamese for the child",
+  "mistakes": [{"word": "word that was mispronounced", "type": "mispronunciation", "feedback": "Specific feedback in Vietnamese"}],
+  "suggestions": ["Suggestion 1 in Vietnamese", "Suggestion 2", "Suggestion 3"]
+}` }
         ]
       },
       config: {
@@ -327,9 +352,19 @@ export const evaluatePresentation = async (originalScript: string, audioBase64: 
     });
 
     const raw = JSON.parse(response.text || '{}');
-    const normalize = (val: number | undefined) => {
-      let v = val || 0;
-      if (v > 0 && v <= 1) v = v * 10;
+    console.log('[SpeakPro] Raw evaluation response:', JSON.stringify(raw));
+
+    // Normalize scores to 0-10 scale
+    // Handle cases where AI returns: integer (8), decimal (0.8 meaning 8/10), or float (7.5)
+    const normalize = (val: number | undefined): number => {
+      if (val === undefined || val === null) return 0;
+      let v = Number(val);
+      if (isNaN(v)) return 0;
+      // If value is between 0 and 1 (exclusive), it's likely on a 0-1 scale → multiply by 10
+      if (v > 0 && v < 1) v = v * 10;
+      // If value is > 10, it might be on 0-100 scale → divide by 10
+      if (v > 10) v = v / 10;
+      // Clamp to 0-10 and round to 1 decimal
       return Math.min(10, Math.max(0, Math.round(v * 10) / 10));
     };
 
@@ -342,11 +377,15 @@ export const evaluatePresentation = async (originalScript: string, audioBase64: 
       taskFulfillment: normalize(raw.taskFulfillment),
     };
 
+    console.log('[SpeakPro] Normalized scores:', scores);
+
     const avg = (scores.pronunciation + scores.fluency + scores.intonation + scores.vocabulary + scores.grammar + scores.taskFulfillment) / 6;
+    const finalScore = Math.round(avg * 10) / 10;
+
     return {
       ...raw,
       ...scores,
-      score: normalize(avg),
+      score: finalScore,
       perceivedLevel: level,
       keyVocabulary: [],
       evaluationDate: new Date().toLocaleDateString('vi-VN')
