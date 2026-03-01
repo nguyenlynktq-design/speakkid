@@ -270,42 +270,34 @@ export const evaluatePresentation = async (originalScript: string, audioBase64: 
         parts: [
           { inlineData: { mimeType: audioMimeType, data: audioBase64 } },
           {
-            text: `You are a certified Cambridge Speaking examiner. You MUST carefully LISTEN to the audio recording attached above and evaluate the child's speaking performance.
+            text: `You are a certified Cambridge Speaking examiner for young learners. You MUST carefully LISTEN to the audio recording attached. The child is reading a presentation script.
 
-TARGET SCRIPT (what the child should have said):
+TARGET SCRIPT (what they should have read):
 "${originalScript}"
 
 IMPORTANT INSTRUCTIONS:
-1. LISTEN CAREFULLY to the audio. Transcribe EXACTLY what the child actually said.
-2. COMPARE the child's speech with the target script word by word.
-3. Score EACH criterion on a scale from 0 to 10 (INTEGER only, no decimals).
+1. TRANSCRIBE FIRST: Listen carefully and transcribe EXACTLY what the child actually said in the audio. Pay attention to skipped words, mispronunciations, or hesitations. DO NOT just copy the target script.
+2. COMPARE & EVALUATE: Compare the child's actual speech (the transcript) against the target script word by word.
+3. SCORING RUBRIC (0-10 INTEGER ONLY):
+   - Pronunciation (0-10): Clarity of sounds, word endings (like -s, -ed), and stress.
+   - Fluency (0-10): Smoothness, appropriate pausing, lack of hesitation.
+   - Intonation (0-10): Natural rise and fall of voice, expressing enthusiasm vs robotic reading.
+   - Vocabulary (0-10): Accurate reading of the vocabulary words without stumbling.
+   - Grammar (0-10): Accurate reading of grammatical structures in the text.
+   - Task Fulfillment (0-10): How much of the script was completed? (e.g. read the whole script = 9-10; read half = 5).
 
-SCORING RUBRIC (0-10 scale):
-- 9-10: Excellent, near-perfect performance
-- 7-8: Good, minor issues only  
-- 5-6: Average, noticeable errors
-- 3-4: Below average, significant problems
-- 1-2: Poor, major difficulties
-- 0: No speech detected or completely unintelligible
+4. SCORING RULES:
+   - 9-10: Excellent clear reading, near-native or very natural AI-like.
+   - 7-8: Good, clear attempt with minor pronunciation/fluency issues.
+   - 5-6: Average, noticeable struggles with reading.
+   - 0-4: Poor, incomprehensible or mostly incomplete.
+   - Be objective but encouraging. A good attempt should be rewarded.
 
-CRITERIA TO EVALUATE:
-- pronunciation: How accurately the child pronounces each word (0-10)
-- fluency: How smoothly and naturally the child speaks without long pauses (0-10)
-- intonation: How well the child uses stress and intonation patterns (0-10)
-- vocabulary: How well the child uses the target vocabulary from the script (0-10)
-- grammar: How correctly the child uses grammar structures (0-10)
-- taskFulfillment: How completely the child covers the script content - did they say all parts? (0-10)
+5. FEEDBACK (VIETNAMESE): Provide highly encouraging, specific feedback in Vietnamese. Praise their effort first, then gently point out 1-2 areas to improve. All text except the transcript MUST be in Vietnamese.
 
-IMPORTANT SCORING RULES:
-- If the child reads the script clearly and completely, scores should be 7-10 for each criterion.
-- If the child reads perfectly (like a native speaker or AI voice), scores should be 9-10.
-- The "transcript" field MUST contain what you actually heard in the audio.
-- ALL scores must be integers between 0 and 10.
-- Write all feedback and suggestions in Vietnamese.
-
-Return JSON with these EXACT fields:
+Return JSON EXACTLY matching this structure:
 {
-  "transcript": "What the child actually said (transcribed from audio)",
+  "transcript": "(What the child actually said - English)",
   "pronunciation": 8,
   "fluency": 7,
   "intonation": 7,
@@ -313,8 +305,8 @@ Return JSON with these EXACT fields:
   "grammar": 8,
   "taskFulfillment": 9,
   "feedback": "Detailed feedback in Vietnamese about the child's performance",
-  "teacherPraise": "Encouraging praise in Vietnamese for the child",
-  "mistakes": [{"word": "word that was mispronounced", "type": "mispronunciation", "feedback": "Specific feedback in Vietnamese"}],
+  "teacherPraise": "Encouraging praise in Vietnamese",
+  "mistakes": [{"word": "mispronounced word", "type": "mispronunciation", "feedback": "Specific feedback in Vietnamese"}],
   "suggestions": ["Suggestion 1 in Vietnamese", "Suggestion 2", "Suggestion 3"]
 }` }
         ]

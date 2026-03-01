@@ -294,8 +294,8 @@ const App: React.FC = () => {
       };
       recAnimFrameRef.current = requestAnimationFrame(updateLevel);
 
-      // Step 4: Create MediaRecorder on the PROCESSED stream (from destination)
-      const processedStream = destination.stream;
+      // Step 4: Create MediaRecorder on the RAW stream instead of processed
+      // (Recording from Web Audio API destination often produces silent webm files in Chrome)
       const supportedTypes = [
         'audio/webm;codecs=opus',
         'audio/webm',
@@ -310,7 +310,7 @@ const App: React.FC = () => {
         ...(mimeType ? { mimeType } : {}),
         audioBitsPerSecond: 128000
       };
-      const recorder = new MediaRecorder(processedStream, recorderOptions);
+      const recorder = new MediaRecorder(stream, recorderOptions);
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (e) => {
