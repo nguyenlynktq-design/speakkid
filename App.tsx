@@ -60,6 +60,7 @@ const App: React.FC = () => {
   // Recording-specific refs
   const recAudioCtxRef = useRef<AudioContext | null>(null);
   const recStreamRef = useRef<MediaStream | null>(null);
+  const recAnalysisStreamRef = useRef<MediaStream | null>(null); // Cloned stream for audio analysis
   const recAnimFrameRef = useRef<number | null>(null);
   const recAnalyserRef = useRef<AnalyserNode | null>(null);
 
@@ -221,6 +222,12 @@ const App: React.FC = () => {
       cancelAnimationFrame(recAnimFrameRef.current);
       recAnimFrameRef.current = null;
     }
+    // Stop the analysis clone stream
+    if (recAnalysisStreamRef.current) {
+      recAnalysisStreamRef.current.getTracks().forEach(t => t.stop());
+      recAnalysisStreamRef.current = null;
+    }
+    // Stop the main mic stream
     if (recStreamRef.current) {
       recStreamRef.current.getTracks().forEach(t => t.stop());
       recStreamRef.current = null;
@@ -253,7 +260,7 @@ const App: React.FC = () => {
     audioChunksRef.current = [];
 
     try {
-      // Step 1: Get mic stream with simple constraints
+      // Step 1: Get mic stream
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recStreamRef.current = stream;
 
@@ -264,24 +271,26 @@ const App: React.FC = () => {
       }
       console.log('[SpeakPro] Mic track:', audioTrack.label, 'state:', audioTrack.readyState, 'enabled:', audioTrack.enabled);
 
-      // Step 2: Route through Web Audio API for reliable capture
+      // Step 2: CLONE the stream for audio analysis (level meter visualization)
+      // CRITICAL: createMediaStreamSource() consumes the audio data from a stream
+      // in Chromium-based browsers. If we use the original stream for both
+      // AudioContext analysis AND MediaRecorder, the recorder gets silence.
+      // Solution: clone the stream — original goes to MediaRecorder untouched,
+      // clone goes to AudioContext for the level meter.
+      const analysisStream = stream.clone();
+      recAnalysisStreamRef.current = analysisStream;
+
       const audioCtx = new AudioContext();
       recAudioCtxRef.current = audioCtx;
 
-      const sourceNode = audioCtx.createMediaStreamSource(stream);
-      const gainNode = audioCtx.createGain();
-      gainNode.gain.value = 1.5; // Slight boost to ensure audibility
-
+      // Use the CLONED stream for analysis (not the original!)
+      const sourceNode = audioCtx.createMediaStreamSource(analysisStream);
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
       recAnalyserRef.current = analyser;
 
-      const destination = audioCtx.createMediaStreamDestination();
-
-      // Connect: Mic → Gain → Analyser → Destination
-      sourceNode.connect(gainNode);
-      gainNode.connect(analyser);
-      analyser.connect(destination);
+      // Connect: Cloned Mic → Analyser (just for visualization, no destination needed)
+      sourceNode.connect(analyser);
 
       // Step 3: Start audio level monitoring
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -294,8 +303,9 @@ const App: React.FC = () => {
       };
       recAnimFrameRef.current = requestAnimationFrame(updateLevel);
 
-      // Step 4: Create MediaRecorder on the RAW stream instead of processed
-      // (Recording from Web Audio API destination often produces silent webm files in Chrome)
+      // Step 4: Create MediaRecorder on the ORIGINAL (untouched) stream
+      // The original stream has NOT been connected to any AudioContext,
+      // so its audio data is fully available for the MediaRecorder.
       const supportedTypes = [
         'audio/webm;codecs=opus',
         'audio/webm',
